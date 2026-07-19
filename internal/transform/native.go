@@ -63,6 +63,9 @@ func (n *Native) Transform(src []byte, p Params) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("transform: decode: %w", err)
 	}
+	if b := img.Bounds(); b.Dx() <= 0 || b.Dy() <= 0 {
+		return Result{}, fmt.Errorf("transform: source has empty dimensions %dx%d", b.Dx(), b.Dy())
+	}
 
 	out := resizeCrop(img, p.Width, p.Height, p.Crop)
 	b := out.Bounds()

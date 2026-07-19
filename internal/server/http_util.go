@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"log/slog"
 	"net"
@@ -82,7 +83,11 @@ func acceptsType(accept, mime string) bool {
 }
 
 // constantTimeHeader compares a header value to an expected secret without
-// leaking length/content timing.
+// leaking length or content via timing. Both sides are hashed to a fixed size
+// first so ConstantTimeCompare never short-circuits on a length mismatch (which
+// would otherwise leak the secret's length).
 func constantTimeHeader(got, want string) bool {
-	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+	g := sha256.Sum256([]byte(got))
+	w := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(g[:], w[:]) == 1
 }

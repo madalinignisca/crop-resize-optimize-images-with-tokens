@@ -12,6 +12,12 @@ import (
 func resizeCrop(src image.Image, w, h int, crop string) image.Image {
 	nr := toNRGBA(src)
 	b := nr.Bounds() // origin 0,0
+	// Guard degenerate sources: a 0-width/height image would make resizeGeometry
+	// return an empty region, and the sampler would index out of bounds. Callers
+	// reject these earlier, but keep the resampler self-safe.
+	if b.Dx() <= 0 || b.Dy() <= 0 {
+		return image.NewNRGBA(image.Rect(0, 0, maxInt(w, 1), maxInt(h, 1)))
+	}
 	region, dstW, dstH := resizeGeometry(b.Dx(), b.Dy(), w, h, crop)
 
 	// Fast path: nothing to do.

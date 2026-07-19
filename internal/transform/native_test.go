@@ -133,6 +133,28 @@ func TestNativeNoResizeReencode(t *testing.T) {
 	}
 }
 
+func TestNativeRejectsEmptyImage(t *testing.T) {
+	// A 1x0 NRGBA encodes to a valid-but-degenerate PNG; the backend must
+	// reject it with an error rather than panic in the resampler.
+	empty := image.NewNRGBA(image.Rect(0, 0, 1, 0))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, empty); err != nil {
+		t.Skipf("cannot encode degenerate png: %v", err)
+	}
+	n := NewNative(0)
+	if _, err := n.Transform(buf.Bytes(), Params{Width: 10, Height: 10, Format: FormatPNG}); err == nil {
+		t.Fatal("expected error for empty-dimension source")
+	}
+}
+
+// resizeCrop must be self-safe even if handed a degenerate image directly.
+func TestResizeCropEmptySourceNoPanic(t *testing.T) {
+	out := resizeCrop(image.NewNRGBA(image.Rect(0, 0, 0, 0)), 20, 30, CropCover)
+	if out.Bounds().Dx() != 20 || out.Bounds().Dy() != 30 {
+		t.Fatalf("got %v, want 20x30 placeholder", out.Bounds())
+	}
+}
+
 func abs(x int) int {
 	if x < 0 {
 		return -x

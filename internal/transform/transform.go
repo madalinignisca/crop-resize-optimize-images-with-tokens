@@ -56,7 +56,8 @@ type Params struct {
 type Bounds struct {
 	MaxWidth       int   // hard cap on output width (e.g. 4000)
 	MaxHeight      int   // hard cap on output height (e.g. 4000)
-	MaxOutputPixel int64 // hard cap on Width*Height (decompression-bomb guard)
+	MaxOutputPixel int64 // hard cap on output Width*Height (decompression-bomb guard)
+	MaxSourcePixel int64 // hard cap on decoded source Width*Height
 	DefaultQuality int   // used when a token requests quality 0
 }
 
@@ -129,9 +130,15 @@ func ContentTypeFor(format string) string {
 	}
 }
 
-// Clamp applies the server-side bounds to p. This is defense in depth: it runs
-// on every request, so even a validly-signed token minted by a compromised
-// internal system cannot exceed these limits.
+// Clamp bounds the *requested* parameters. It caps the explicitly-requested
+// Width/Height (which also keeps the geometry intermediates in native/vips
+// small) and normalises quality/format.
+//
+// It is NOT the last line of defense on output size: a proportional request
+// (one of Width/Height is 0) or a no-resize request (both 0) has its final
+// dimensions derived from the source aspect ratio, which Clamp cannot see.
+// Backends must therefore run [ClampDims] on the geometry output before
+// allocating pixels — that is what actually stops a decompression-bomb render.
 //
 //   - Width/Height are capped to MaxWidth/MaxHeight.
 //   - If Width*Height still exceeds MaxOutputPixel, both are scaled down
@@ -173,6 +180,36 @@ func Clamp(p Params, b Bounds) Params {
 		p.Format = FormatJPEG
 	}
 	return p
+}
+
+// ClampDims scales a concrete, already-computed output size down until it
+// satisfies MaxWidth, MaxHeight and MaxOutputPixel, preserving aspect ratio. It
+// is applied by every backend to the dimensions produced by resizeGeometry, so
+// that proportional and no-resize requests — whose output size is derived from
+// the source, not from the token — are bounded just like explicit ones. This is
+// the guard that prevents a validly-signed token from driving an unbounded
+// (OOM-inducing) allocation.
+func ClampDims(w, h int, b Bounds) (int, int) {
+	if w <= 0 || h <= 0 {
+		return maxInt(w, 1), maxInt(h, 1)
+	}
+	scale := 1.0
+	if b.MaxWidth > 0 && w > b.MaxWidth {
+		scale = math.Min(scale, float64(b.MaxWidth)/float64(w))
+	}
+	if b.MaxHeight > 0 && h > b.MaxHeight {
+		scale = math.Min(scale, float64(b.MaxHeight)/float64(h))
+	}
+	if b.MaxOutputPixel > 0 {
+		if pixels := int64(w) * int64(h); pixels > b.MaxOutputPixel {
+			scale = math.Min(scale, math.Sqrt(float64(b.MaxOutputPixel)/float64(pixels)))
+		}
+	}
+	if scale < 1.0 {
+		w = maxInt(1, int(float64(w)*scale))
+		h = maxInt(1, int(float64(h)*scale))
+	}
+	return w, h
 }
 
 // String renders Params in a stable form used as part of the cache key.

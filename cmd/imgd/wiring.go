@@ -27,20 +27,22 @@ func buildServer(cfg config.Config, log *slog.Logger) (*server.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	tr := newTransformer(cfg.MaxSourcePixel)
+	bounds := transform.Bounds{
+		MaxWidth:       cfg.MaxWidth,
+		MaxHeight:      cfg.MaxHeight,
+		MaxOutputPixel: cfg.MaxOutputPixel,
+		MaxSourcePixel: cfg.MaxSourcePixel,
+		DefaultQuality: cfg.DefaultQuality,
+	}
+	tr := newTransformer(bounds)
 	log.Info("image backend selected", "backend", tr.Name())
 
 	return server.New(server.Options{
-		Signer:      sg,
-		Source:      src,
-		Cache:       c,
-		Transformer: tr,
-		Bounds: transform.Bounds{
-			MaxWidth:       cfg.MaxWidth,
-			MaxHeight:      cfg.MaxHeight,
-			MaxOutputPixel: cfg.MaxOutputPixel,
-			DefaultQuality: cfg.DefaultQuality,
-		},
+		Signer:        sg,
+		Source:        src,
+		Cache:         c,
+		Transformer:   tr,
+		Bounds:        bounds,
 		CacheMaxAge:   cfg.CacheMaxAge,
 		InternalToken: cfg.InternalToken,
 		PublicBaseURL: cfg.PublicBaseURL,

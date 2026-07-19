@@ -25,7 +25,12 @@ var ErrForbidden = errors.New("source: forbidden path")
 
 // Source loads image bytes for a token's src identifier.
 type Source interface {
+	// Open validates src and returns its bytes.
 	Open(src string) ([]byte, error)
+	// Version returns a cheap token that changes whenever the bytes for src
+	// change (e.g. mtime+size), so the cache can key on the current content. It
+	// returns the same ErrNotFound/ErrForbidden sentinels as Open.
+	Version(src string) (string, error)
 }
 
 // Dir is a Source backed by a base directory on local disk. It is the v1
@@ -41,6 +46,10 @@ type Dir struct {
 // expression that the *cleaned* src (relative, forward-slash) must fully match;
 // pass "" to allow any path that stays within base. maxSize caps the file size
 // read into memory (bytes); pass 0 for no cap.
+//
+// The pattern is anchored to the whole string (\A...\z), so an unanchored
+// pattern like `\.jpg` cannot match a substring of a longer path — a full match
+// is always required, as documented.
 func NewDir(base, allowPattern string, maxSize int64) (*Dir, error) {
 	if strings.TrimSpace(base) == "" {
 		return nil, errors.New("source: base directory is empty")
@@ -51,7 +60,7 @@ func NewDir(base, allowPattern string, maxSize int64) (*Dir, error) {
 	}
 	d := &Dir{base: abs, maxSize: maxSize}
 	if allowPattern != "" {
-		re, err := regexp.Compile(allowPattern)
+		re, err := regexp.Compile(`\A(?:` + allowPattern + `)\z`)
 		if err != nil {
 			return nil, fmt.Errorf("source: compile allow pattern: %w", err)
 		}
@@ -92,40 +101,58 @@ func (d *Dir) Resolve(src string) (string, error) {
 	return full, nil
 }
 
-// Open validates src and returns its bytes.
-func (d *Dir) Open(src string) ([]byte, error) {
+// statReal validates src, resolves symlinks, re-checks containment, and returns
+// the real on-disk path together with its FileInfo. It is the shared front half
+// of Open and Version.
+func (d *Dir) statReal(src string) (string, os.FileInfo, error) {
 	full, err := d.Resolve(src)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
-
 	// Defend against symlinks that point outside base. EvalSymlinks needs the
 	// file to exist, so a missing file is reported as not-found.
 	real, err := filepath.EvalSymlinks(full)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, ErrNotFound
+			return "", nil, ErrNotFound
 		}
-		return nil, ErrForbidden
+		return "", nil, ErrForbidden
 	}
 	if !withinBase(d.base, real) {
-		return nil, ErrForbidden
+		return "", nil, ErrForbidden
 	}
-
 	info, err := os.Stat(real)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, ErrNotFound
+			return "", nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("source: stat: %w", err)
+		return "", nil, fmt.Errorf("source: stat: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, ErrForbidden
+		return "", nil, ErrForbidden
+	}
+	return real, info, nil
+}
+
+// Version returns an mtime+size token for src that changes whenever the file's
+// content changes, so a replaced source invalidates its cached renders.
+func (d *Dir) Version(src string) (string, error) {
+	_, info, err := d.statReal(src)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d-%d", info.ModTime().UnixNano(), info.Size()), nil
+}
+
+// Open validates src and returns its bytes.
+func (d *Dir) Open(src string) ([]byte, error) {
+	real, info, err := d.statReal(src)
+	if err != nil {
+		return nil, err
 	}
 	if d.maxSize > 0 && info.Size() > d.maxSize {
 		return nil, fmt.Errorf("source: %q exceeds max size %d bytes", src, d.maxSize)
 	}
-
 	data, err := os.ReadFile(real)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

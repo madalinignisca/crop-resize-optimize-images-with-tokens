@@ -33,7 +33,7 @@ can't request an arbitrary transform, and the public surface never accepts raw
 | `internal/token` | Token encode/decode, HMAC sign/verify (constant-time), expiry, secret rotation |
 | `internal/source` | Resolve `src` → bytes, confined to a base dir (traversal + symlink-escape safe) |
 | `internal/transform` | Transform params, server-side clamping, `Transformer` interface + backends |
-| `internal/cache` | Disk cache keyed by a hash of the effective transform |
+| `internal/cache` | Disk cache keyed by a hash of source id + source version + effective transform |
 | `internal/server` | Public image handler + internal signing handler |
 | `internal/config` | Env / secret-file configuration |
 | `cmd/imgd` | Service entrypoint (two listeners, graceful shutdown) |

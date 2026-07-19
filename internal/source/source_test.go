@@ -8,6 +8,57 @@ import (
 	"testing"
 )
 
+func TestAllowlistIsFullMatchAnchored(t *testing.T) {
+	// An UNanchored pattern must still be treated as a full-string match, not a
+	// substring match, so it cannot leak access to longer paths.
+	d, err := NewDir(t.TempDir(), `products/1\.png`, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Resolve("products/1.png"); err != nil {
+		t.Errorf("exact match should be allowed: %v", err)
+	}
+	for _, s := range []string{"products/1.png.bak", "a/products/1.png"} {
+		if _, err := d.Resolve(s); !errors.Is(err, ErrForbidden) {
+			t.Errorf("Resolve(%q) = %v, want ErrForbidden (must be full match)", s, err)
+		}
+	}
+}
+
+func TestVersionChangesWithContent(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "img.png")
+	if err := os.WriteFile(path, []byte("aaaa"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, _ := NewDir(base, "", 0)
+	v1, err := d.Version("img.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Different size => different version.
+	if err := os.WriteFile(path, []byte("bbbbbbbb"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := d.Version("img.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v1 == v2 {
+		t.Fatalf("version should change when content changes: %q == %q", v1, v2)
+	}
+}
+
+func TestVersionErrors(t *testing.T) {
+	d, _ := NewDir(t.TempDir(), "", 0)
+	if _, err := d.Version("missing.png"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing: want ErrNotFound, got %v", err)
+	}
+	if _, err := d.Version("../escape"); !errors.Is(err, ErrForbidden) {
+		t.Errorf("traversal: want ErrForbidden, got %v", err)
+	}
+}
+
 func TestResolveRejectsTraversal(t *testing.T) {
 	d, err := NewDir(t.TempDir(), "", 0)
 	if err != nil {

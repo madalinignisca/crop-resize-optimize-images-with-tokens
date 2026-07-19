@@ -58,6 +58,7 @@ type testEnv struct {
 	tr     *countingTransformer
 	pub    http.Handler
 	intr   http.Handler
+	srcDir string
 }
 
 func newTestEnv(t *testing.T) testEnv {
@@ -78,23 +79,25 @@ func newTestEnv(t *testing.T) testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tr := &countingTransformer{inner: transform.NewNative(100_000_000)}
+	bounds := transform.Bounds{
+		MaxWidth: 4000, MaxHeight: 4000, MaxOutputPixel: 24_000_000,
+		MaxSourcePixel: 100_000_000, DefaultQuality: 82,
+	}
+	tr := &countingTransformer{inner: transform.NewNative(bounds)}
 
 	srv, err := New(Options{
-		Signer:      sg,
-		Source:      src,
-		Cache:       c,
-		Transformer: tr,
-		Bounds: transform.Bounds{
-			MaxWidth: 4000, MaxHeight: 4000, MaxOutputPixel: 24_000_000, DefaultQuality: 82,
-		},
+		Signer:        sg,
+		Source:        src,
+		Cache:         c,
+		Transformer:   tr,
+		Bounds:        bounds,
 		InternalToken: "internal-secret",
 		Now:           func() time.Time { return time.Unix(1_000_000, 0) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testEnv{srv: srv, signer: sg, tr: tr, pub: srv.PublicHandler(), intr: srv.InternalHandler()}
+	return testEnv{srv: srv, signer: sg, tr: tr, pub: srv.PublicHandler(), intr: srv.InternalHandler(), srcDir: srcDir}
 }
 
 func (e testEnv) get(t *testing.T, path string, headers map[string]string) *httptest.ResponseRecorder {
@@ -252,6 +255,29 @@ func TestNoRawParamsAccepted(t *testing.T) {
 	}
 	if e.tr.calls != 0 {
 		t.Fatal("no rendering for raw-param request")
+	}
+}
+
+func TestSourceReplacementInvalidatesCache(t *testing.T) {
+	e := newTestEnv(t)
+	tok, _ := e.signer.Sign(token.Params{Src: "products/1.png", W: 100, H: 100, Crop: "cover", Fmt: "png"})
+	p := BuildPath(tok, "")
+
+	if rec := e.get(t, p, nil); rec.Code != http.StatusOK {
+		t.Fatalf("first request status %d", rec.Code)
+	}
+	if e.tr.calls != 1 {
+		t.Fatalf("first request should render once, got %d", e.tr.calls)
+	}
+
+	// Replace the source image (different dimensions => different size => new
+	// version token). The next request must re-render, not serve the stale entry.
+	writePNG(t, filepath.Join(e.srcDir, "products", "1.png"), 400, 320)
+	if rec := e.get(t, p, nil); rec.Code != http.StatusOK {
+		t.Fatalf("post-replace status %d", rec.Code)
+	}
+	if e.tr.calls != 2 {
+		t.Fatalf("source replacement must invalidate cache; transformer calls = %d, want 2", e.tr.calls)
 	}
 }
 

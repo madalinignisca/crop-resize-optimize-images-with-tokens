@@ -20,15 +20,16 @@ import (
 // Resizing uses a bilinear resampler (see resize.go). Quality applies to jpeg
 // output; png/gif ignore it.
 type Native struct {
-	// MaxSourcePixel rejects source images whose decoded dimensions exceed this
-	// pixel count, guarding against decompression bombs before full decode.
-	MaxSourcePixel int64
+	// bounds carries the server-side limits: the source-pixel guard and the
+	// output clamp (MaxWidth/MaxHeight/MaxOutputPixel) applied to the derived
+	// render size.
+	bounds Bounds
 }
 
-// NewNative builds the default backend. maxSourcePixel of 0 disables the
-// source-dimension guard.
-func NewNative(maxSourcePixel int64) *Native {
-	return &Native{MaxSourcePixel: maxSourcePixel}
+// NewNative builds the default backend with the given server-side bounds. A
+// zero MaxSourcePixel disables the source-dimension guard.
+func NewNative(b Bounds) *Native {
+	return &Native{bounds: b}
 }
 
 func (n *Native) Name() string { return "native (pure-Go stdlib)" }
@@ -47,15 +48,17 @@ func (n *Native) Transform(src []byte, p Params) (Result, error) {
 		return Result{}, fmt.Errorf("%w: native backend cannot encode %q", ErrUnsupportedFormat, p.Format)
 	}
 
-	// Cheap dimension check before decoding pixels — decompression-bomb guard.
-	if n.MaxSourcePixel > 0 {
+	// Header-only dimension check BEFORE the full decode — this is the
+	// decompression-bomb guard. DecodeConfig reads just the header, so an
+	// oversized source is rejected without ever allocating its pixel buffer.
+	if n.bounds.MaxSourcePixel > 0 {
 		cfg, _, err := image.DecodeConfig(bytes.NewReader(src))
 		if err != nil {
 			return Result{}, fmt.Errorf("transform: decode config: %w", err)
 		}
-		if px := int64(cfg.Width) * int64(cfg.Height); px > n.MaxSourcePixel {
+		if px := int64(cfg.Width) * int64(cfg.Height); px > n.bounds.MaxSourcePixel {
 			return Result{}, fmt.Errorf("transform: source %dx%d exceeds max source pixels %d",
-				cfg.Width, cfg.Height, n.MaxSourcePixel)
+				cfg.Width, cfg.Height, n.bounds.MaxSourcePixel)
 		}
 	}
 
@@ -67,7 +70,7 @@ func (n *Native) Transform(src []byte, p Params) (Result, error) {
 		return Result{}, fmt.Errorf("transform: source has empty dimensions %dx%d", b.Dx(), b.Dy())
 	}
 
-	out := resizeCrop(img, p.Width, p.Height, p.Crop)
+	out := resizeCrop(img, p.Width, p.Height, p.Crop, n.bounds)
 	b := out.Bounds()
 
 	var buf bytes.Buffer

@@ -33,11 +33,12 @@ type Cache interface {
 }
 
 // Key derives a stable, filesystem-safe cache key from the pieces that uniquely
-// determine the output bytes: the resolved source identifier and the canonical
-// transform description. Two different tokens (e.g. differing only by expiry)
-// that render the same image share a cache entry.
-func Key(src, transform string) string {
-	sum := sha256.Sum256([]byte(src + "\x00" + transform))
+// determine the output bytes: the resolved source identifier, a version token
+// for that source (so replacing the file at the same path invalidates its
+// renders), and the canonical transform description. Two different tokens (e.g.
+// differing only by expiry) that render the same image share a cache entry.
+func Key(src, version, transform string) string {
+	sum := sha256.Sum256([]byte(src + "\x00" + version + "\x00" + transform))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -77,6 +78,13 @@ func (d *Disk) Get(key string) (Entry, error) {
 	}
 	matches, _ := filepath.Glob(filepath.Join(d.dir, shard, key+".*"))
 	for _, m := range matches {
+		// Only accept files whose extension maps to a known image type. This
+		// skips any stray in-progress/leftover temp file (named key-*.tmp, which
+		// also would not match this glob) and never serves octet-stream bytes.
+		ct := contentTypeForExt(filepath.Ext(m))
+		if ct == "application/octet-stream" {
+			continue
+		}
 		data, err := os.ReadFile(m)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -86,7 +94,7 @@ func (d *Disk) Get(key string) (Entry, error) {
 		}
 		return Entry{
 			Bytes:       data,
-			ContentType: contentTypeForExt(filepath.Ext(m)),
+			ContentType: ct,
 			ETag:        key,
 		}, nil
 	}
@@ -101,7 +109,9 @@ func (d *Disk) Put(key string, e Entry) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, key+".*.tmp")
+	// Name temp files "key-<rand>.tmp" (hyphen, not dot) so they never match
+	// Get's "key.*" glob while being written.
+	tmp, err := os.CreateTemp(dir, key+"-*.tmp")
 	if err != nil {
 		return err
 	}

@@ -21,13 +21,13 @@ import (
 // consistent with the native backend, delegating only the pixel work to
 // libvips.
 type Vips struct {
-	MaxSourcePixel int64
+	bounds Bounds
 }
 
-// NewVips builds the libvips backend. maxSourcePixel of 0 disables the
-// source-dimension guard.
-func NewVips(maxSourcePixel int64) *Vips {
-	return &Vips{MaxSourcePixel: maxSourcePixel}
+// NewVips builds the libvips backend with the given server-side bounds. A zero
+// MaxSourcePixel disables the source-dimension guard.
+func NewVips(b Bounds) *Vips {
+	return &Vips{bounds: b}
 }
 
 func (v *Vips) Name() string { return fmt.Sprintf("vips (libvips %s)", bimg.VipsVersion) }
@@ -52,10 +52,10 @@ func (v *Vips) Transform(src []byte, p Params) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("transform: read source size: %w", err)
 	}
-	if v.MaxSourcePixel > 0 {
-		if px := int64(size.Width) * int64(size.Height); px > v.MaxSourcePixel {
+	if v.bounds.MaxSourcePixel > 0 {
+		if px := int64(size.Width) * int64(size.Height); px > v.bounds.MaxSourcePixel {
 			return Result{}, fmt.Errorf("transform: source %dx%d exceeds max source pixels %d",
-				size.Width, size.Height, v.MaxSourcePixel)
+				size.Width, size.Height, v.bounds.MaxSourcePixel)
 		}
 	}
 
@@ -68,17 +68,21 @@ func (v *Vips) Transform(src []byte, p Params) (Result, error) {
 
 	switch p.Crop {
 	case CropCover:
-		// Let libvips scale-to-cover and centre-crop to exactly WxH.
-		opts.Width = p.Width
-		opts.Height = p.Height
+		// Let libvips scale-to-cover and centre-crop to exactly WxH. Clamp the
+		// target too, so it stays within the server bounds.
+		w, h := ClampDims(p.Width, p.Height, v.bounds)
+		opts.Width = w
+		opts.Height = h
 		opts.Crop = true
 		opts.Gravity = bimg.GravityCentre
 	default:
 		// contain / fill / proportional / no-resize: compute the exact output
-		// dimensions with the shared geometry, then force libvips to them. For
-		// "fill" these are w,h; for the others they preserve aspect ratio, so
-		// Force introduces no distortion.
+		// dimensions with the shared geometry, clamp them to the server bounds
+		// (this bounds proportional/no-resize renders too), then force libvips
+		// to them. For "fill" these are w,h; for the others they preserve aspect
+		// ratio, so Force introduces no distortion.
 		_, dstW, dstH := resizeGeometry(size.Width, size.Height, p.Width, p.Height, p.Crop)
+		dstW, dstH = ClampDims(dstW, dstH, v.bounds)
 		opts.Width = dstW
 		opts.Height = dstH
 		opts.Force = true

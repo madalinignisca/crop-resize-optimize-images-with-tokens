@@ -8,8 +8,10 @@ import (
 )
 
 // resizeCrop resamples src to the geometry implied by w/h/crop using bilinear
-// interpolation. It always returns an *image.NRGBA with a 0,0 origin.
-func resizeCrop(src image.Image, w, h int, crop string) image.Image {
+// interpolation. The geometry output is clamped to bounds before allocation, so
+// a proportional or no-resize request cannot produce an oversized render. It
+// always returns an *image.NRGBA with a 0,0 origin.
+func resizeCrop(src image.Image, w, h int, crop string, bounds Bounds) image.Image {
 	nr := toNRGBA(src)
 	b := nr.Bounds() // origin 0,0
 	// Guard degenerate sources: a 0-width/height image would make resizeGeometry
@@ -19,6 +21,7 @@ func resizeCrop(src image.Image, w, h int, crop string) image.Image {
 		return image.NewNRGBA(image.Rect(0, 0, maxInt(w, 1), maxInt(h, 1)))
 	}
 	region, dstW, dstH := resizeGeometry(b.Dx(), b.Dy(), w, h, crop)
+	dstW, dstH = ClampDims(dstW, dstH, bounds)
 
 	// Fast path: nothing to do.
 	if dstW == b.Dx() && dstH == b.Dy() && region == b {

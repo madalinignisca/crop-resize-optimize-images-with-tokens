@@ -98,6 +98,16 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve a cheap version token for the source so the cache key follows the
+	// current file content: replacing the image at the same path invalidates its
+	// renders. This also rejects a missing/forbidden source before any cache or
+	// render work.
+	version, err := s.opt.Source.Version(p.Src)
+	if err != nil {
+		s.writeSourceError(w, p.Src, err)
+		return
+	}
+
 	// 4-5. Resolve output format, translate + clamp parameters.
 	tp := transform.Params{
 		Width:   p.W,
@@ -108,7 +118,7 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request) {
 	}
 	tp = transform.Clamp(tp, s.opt.Bounds)
 
-	key := cache.Key(p.Src, tp.String())
+	key := cache.Key(p.Src, version, tp.String())
 	etag := `"` + key + `"`
 
 	// Conditional GET: if the client already holds this exact render, skip work.
@@ -130,16 +140,7 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request) {
 	// Cache miss: load source, render, store, serve.
 	src, err := s.opt.Source.Open(p.Src)
 	if err != nil {
-		switch {
-		case errors.Is(err, source.ErrNotFound):
-			http.Error(w, "not found", http.StatusNotFound)
-		case errors.Is(err, source.ErrForbidden):
-			s.log.Warn("source path rejected", "src", p.Src, "err", err)
-			http.Error(w, "forbidden", http.StatusForbidden)
-		default:
-			s.log.Error("source open failed", "src", p.Src, "err", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-		}
+		s.writeSourceError(w, p.Src, err)
 		return
 	}
 
@@ -160,6 +161,20 @@ func (s *Server) serveImage(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("cache put failed", "err", err, "key", key)
 	}
 	s.writeImage(w, r, entry, etag)
+}
+
+// writeSourceError maps a source.Source error to an HTTP response.
+func (s *Server) writeSourceError(w http.ResponseWriter, src string, err error) {
+	switch {
+	case errors.Is(err, source.ErrNotFound):
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, source.ErrForbidden):
+		s.log.Warn("source path rejected", "src", src, "err", err)
+		http.Error(w, "forbidden", http.StatusForbidden)
+	default:
+		s.log.Error("source access failed", "src", src, "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) writeImage(w http.ResponseWriter, r *http.Request, e cache.Entry, etag string) {

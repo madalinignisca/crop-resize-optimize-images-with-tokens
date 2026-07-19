@@ -66,6 +66,40 @@ func TestNormalizeFormat(t *testing.T) {
 	}
 }
 
+func TestClampDims(t *testing.T) {
+	b := Bounds{MaxWidth: 4000, MaxHeight: 4000, MaxOutputPixel: 1_000_000}
+
+	// Within all bounds: unchanged.
+	if w, h := ClampDims(800, 600, b); w != 800 || h != 600 {
+		t.Errorf("in-bounds changed: %dx%d", w, h)
+	}
+
+	// Exceeds a single dimension: scale down, aspect ratio preserved.
+	if w, h := ClampDims(200, 8000, b); h > 4000 {
+		t.Errorf("height not capped: %dx%d", w, h)
+	}
+
+	// Exceeds pixel budget: scaled to fit, aspect ratio preserved.
+	w, h := ClampDims(2000, 2000, b) // 4,000,000 px > 1,000,000
+	if int64(w)*int64(h) > b.MaxOutputPixel {
+		t.Errorf("pixel budget exceeded: %d px", int64(w)*int64(h))
+	}
+	if w != h {
+		t.Errorf("square aspect not preserved: %dx%d", w, h)
+	}
+
+	// A wildly proportional derived size is bounded on every axis.
+	w, h = ClampDims(4000, 400_000_000, b)
+	if w > 4000 || h > 4000 || int64(w)*int64(h) > b.MaxOutputPixel {
+		t.Errorf("extreme dims not clamped: %dx%d", w, h)
+	}
+
+	// Disabled bounds (all zero): unchanged.
+	if w, h := ClampDims(99999, 88888, Bounds{}); w != 99999 || h != 88888 {
+		t.Errorf("zero bounds should not clamp: %dx%d", w, h)
+	}
+}
+
 func TestResizeGeometry(t *testing.T) {
 	tests := []struct {
 		name         string
